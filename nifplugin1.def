@@ -1,0 +1,12 @@
+; nifplugin1.def : Declares the module parameters for the DLL.
+
+LIBRARY      "nifplugin1"
+DESCRIPTION  'nifplugin1 Windows Dynamic Link Library'
+
+EXPORTS
+	LibDescription	@1
+	LibNumberClasses	@2
+	LibClassDesc	@3
+	LibVersion	@4
+SECTIONS
+	.data READ WRITE

@@ -1,0 +1,878 @@
+/*===========================================================================
+ *
+ * File:	Nifimport.CPP
+ * Author:	Dave Humphrey (uesp@m0use.net)
+ * Created On:	Tuesday, December 23, 2003
+ *
+ * Description
+ *
+ *=========================================================================*/
+
+	/* Include Files */
+#include "stdafx.h"
+#include "nifimport.h"
+
+
+/*===========================================================================
+ *
+ * Begin Local Definitions
+ *
+ *=========================================================================*/
+  DEFINE_FILE("NifImport.cpp");
+
+  static CNifClassDesc s_ClassDesc;
+  static bool g_ShowPrompts = true;
+
+  ImpInterface* CNifImport::m_pImpInt = NULL;
+/*===========================================================================
+ *		End of Local Definitions
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Function - DWORD l_DummyCallback (arg);
+ *
+ * Local dummy thread function.
+ *
+ *=========================================================================*/
+DWORD WINAPI l_DummyCallback (LPVOID arg) { 
+  return (0);
+ }
+/*===========================================================================
+ *		End of Function WINAPI l_DummyCallback()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Function - int CreateBox (MeshObject, Size);
+ *
+ * Creates a simple box with the given mesh object.
+ *
+ *=========================================================================*/
+int CreateBox (Mesh& MeshObject, const float Size) {
+
+  MeshObject.setNumVerts(8);
+  MeshObject.setNumFaces(12);
+  MeshObject.setVert(0, 0, 0, 0);
+  MeshObject.setVert(1, Size, 0, 0);
+  MeshObject.setVert(2, Size, Size, 0);
+  MeshObject.setVert(3, 0, Size, 0);
+  MeshObject.setVert(4, 0, 0, Size);
+  MeshObject.setVert(5, Size, 0, Size);
+  MeshObject.setVert(6, Size, Size, Size);
+  MeshObject.setVert(7, 0, Size, Size);
+  MeshObject.faces[0].setVerts(0, 2, 1);
+  MeshObject.faces[1].setVerts(0, 3, 2);
+  MeshObject.faces[2].setVerts(0, 7, 4);
+  MeshObject.faces[3].setVerts(0, 3, 7);
+  MeshObject.faces[4].setVerts(0, 1, 5);
+  MeshObject.faces[5].setVerts(0, 5, 4);
+  MeshObject.faces[6].setVerts(3, 2, 6);
+  MeshObject.faces[7].setVerts(3, 6, 7);
+  MeshObject.faces[8].setVerts(1, 2, 6);
+  MeshObject.faces[9].setVerts(1, 6, 5);
+  MeshObject.faces[10].setVerts(4, 5, 6);
+  MeshObject.faces[11].setVerts(4, 6, 7);
+ 
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Function CreateBox()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Function - Matrix3 CreateTransformMatrix (pArray);
+ *
+ * Create and return a Matrix3 transformation matrix from the given array
+ * of floats from a Node or TriShape NIF record.
+ *
+ *=========================================================================*/
+Matrix3 CreateTransformMatrix (const float* pArray) {
+  //DEFINE_FUNCTION("CreateTransformMatrix()");
+  Matrix3	TransformMatrix;
+  Point3	UPoint;
+  Point3	VPoint;
+  Point3	NPoint;
+  Point3	TPoint;
+
+	/* Set the transform points */
+  UPoint.x = pArray[3];
+  UPoint.y = pArray[4];
+  UPoint.z = pArray[5];
+  VPoint.x = pArray[6];
+  VPoint.y = pArray[7];
+  VPoint.z = pArray[8];
+  NPoint.x = pArray[9];
+  NPoint.y = pArray[10];
+  NPoint.z = pArray[11];
+  TPoint.x = pArray[0];
+  TPoint.y = pArray[1];
+  TPoint.z = pArray[2];
+
+ /* UPoint.x = pArray[11];
+  UPoint.y = pArray[10];
+  UPoint.z = pArray[9];
+  VPoint.x = pArray[8];
+  VPoint.y = pArray[7];
+  VPoint.z = pArray[6];
+  NPoint.x = pArray[5];
+  NPoint.y = pArray[4];
+  NPoint.z = pArray[3];
+  TPoint.x = pArray[0];
+  TPoint.y = pArray[1];
+  TPoint.z = pArray[2]; //*/
+
+
+  TransformMatrix.Set(UPoint, VPoint, NPoint, TPoint);
+  return (TransformMatrix);
+ }
+/*===========================================================================
+ *		End of Function CreateTransformMatrix()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Begin Exported Functions
+ *
+ *=========================================================================*/
+
+	/* Return a short description of the library */
+__declspec(dllexport) const TCHAR* LibDescription() { 
+  return _T("NIF Import Plugin"); 
+ }
+
+
+	/* Return the number of classes defined */
+__declspec(dllexport) int LibNumberClasses() { 
+  return 1;
+ }
+
+
+	/* Access the description of the defined classes */
+__declspec(dllexport) ClassDesc* LibClassDesc(int i) {
+  switch(i) {
+    case 0:  return &s_ClassDesc; break;
+    default: return 0; break;
+   }
+  }
+
+
+	/* Return version so can detect obsolete DLLs */
+__declspec(dllexport) ULONG LibVersion() { 
+  return VERSION_3DSMAX; 
+ }
+
+
+	/* Let the plug-in register itself for deferred loading */
+__declspec(dllexport) ULONG CanAutoDefer() {
+  return 1;
+ }
+/*===========================================================================
+ *		End of Exported Functions
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Constructor
+ *
+ *=========================================================================*/
+CNifImport::CNifImport () {
+  //DEFINE_FUNCTION("CNifImport::CNifImport()");
+  m_pInterface = NULL;
+
+  m_pLastNode     = NULL;
+  m_pLastTriShape = NULL;
+  m_pCurrentNode  = NULL;
+  m_pCurrentNode1 = NULL;
+  m_AddedNodeScene = false;
+  m_pLastSourceTexture = NULL;
+ }
+/*===========================================================================
+ *		End of Class CNifImport Constructor
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - void Destroy (void);
+ *
+ *=========================================================================*/
+void CNifImport::Destroy (void) {
+  //DEFINE_FUNCTION("CNifImport::Destroy()");
+  m_NifFile.Destroy();
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::Destroy()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ExtCount ();
+ *
+ * Returns the number of extensions defined. Pure virtual overload.
+ *
+ *=========================================================================*/
+int CNifImport::ExtCount() {
+  return (1);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ExtCount()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class TCHAR* CNifImport Method - const Ext (ExtIndex);
+ *
+ * Returns the specified extension string. Pure virtual overload.
+ *
+ *=========================================================================*/
+const TCHAR* CNifImport::Ext (int ExtIndex) { 
+
+  switch (ExtIndex) {
+    case 0:  return _T("Nif");
+    default: return _T("");
+   }
+ }
+/*===========================================================================
+ *		End of Class Method TCHAR* CNifImport::Ext()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class TCHAR* CNifImport Method - const LongDesc ();
+ *
+ * Long description of the plugin. Pure virtual overload.
+ *
+ *=========================================================================*/
+const TCHAR* CNifImport::LongDesc () {
+  return _T("NIF v3.0 Importer");
+ }
+/*===========================================================================
+ *		End of Class Method TCHAR* CNifImport::LongDesc()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class TCHAR* CNifImport Method - const ShortDesc ();
+ *
+ * Return a short description of the plugin. Pure virtual overload.
+ *
+ *=========================================================================*/
+const TCHAR* CNifImport::ShortDesc () {
+  return _T("NIF Import");
+ }
+/*===========================================================================
+ *		End of Class Method TCHAR* CNifImport::ShortDesc()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class TCHAR* CNifImport Method - const AuthorName ();
+ *
+ * Returns the author of the plugin. Pure virtual method.
+ *
+ *=========================================================================*/
+const TCHAR* CNifImport::AuthorName () {
+  return _T("Dave Humphrey, uesp@sympatico.ca");
+ }
+/*===========================================================================
+ *		End of Class Method TCHAR* CNifImport::AuthorName()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class TCHAR* CNifImport Method - const CopyrightMessage ();
+ *
+ * Returns the copyright message for the plugin. Pure virtual overload.
+ *
+ *=========================================================================*/
+const TCHAR* CNifImport::CopyrightMessage () {
+  return _T("Copyright (c) 2003");
+ }
+/*===========================================================================
+ *		End of Class Method TCHAR* CNifImport::CopyrightMessage()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class TCHAR* CNifImport Method - const OtherMessage1 ();
+ *
+ * Return other message strings. Pure virtual overload.
+ *
+ *=========================================================================*/
+const TCHAR* CNifImport::OtherMessage1 () {
+  return _T("");
+ }
+
+
+const TCHAR* CNifImport::OtherMessage2 () {
+  return _T("");
+ }
+/*===========================================================================
+ *		End of Class Method TCHAR* CNifImport::OtherMessage1()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class int CNifImport Method - unsigned Version ();
+ *
+ * Return the plugin's version x100. Pure virtual overload.
+ *
+ *=========================================================================*/
+unsigned int CNifImport::Version () {
+  return (010);
+ }
+/*===========================================================================
+ *		End of Class Method int CNifImport::Version()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - void ShowAbout (hWnd);
+ *
+ * Show the plugin's about box (optional). Pure virtual overload.
+ *
+ *=========================================================================*/
+void CNifImport::ShowAbout (HWND hWnd) {
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ShowAbout()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int DoImport (pFilename, pI, pGI, SuppressPrompts);
+ *
+ * Start the import process. Pure virtual overload.
+ *
+ *=========================================================================*/
+int CNifImport::DoImport (const TCHAR* pFilename, ImpInterface* pI, Interface* pGI, BOOL SuppressPrompts) {
+  int Result;
+
+	/* Initialize class members */
+  g_ShowPrompts = (SuppressPrompts == TRUE);
+  m_pInterface  = pGI;
+  m_pImpInt     = pI;
+
+	/* Show the show the import progress */
+  m_pInterface->ProgressStart(_T("Importing NIF"), TRUE, l_DummyCallback, 0);
+
+  Result = ImportNif(pFilename);
+  //Result = IMPEXP_CANCEL;	
+
+	/* Get rid of the progress bar */
+  m_pInterface->ProgressEnd();
+  return (Result <= 0 ? IMPEXP_FAIL : Result);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::DoImport()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int CreateScene (void);
+ *
+ * Takes the current NIF file and attempts to create the MAX scene with it.
+ * Protected class methods.
+ *
+ *=========================================================================*/
+int CNifImport::CreateScene (void) {
+  //DEFINE_FUNCTION("CNifImport::CreateScene()");
+  CNifBaseRecord* pRecord;
+  POSITION        NifPos;
+  int		  Result;
+  float		  Percent;
+  int		  Index = 0;
+
+  	/* Update the progress bar */
+  m_pInterface->ProgressUpdate(50, TRUE, _T("Creating Scene..."));
+
+	/* Iterate through all records in the NIF file */
+  pRecord = m_NifFile.GetFirstRecord(NifPos);
+  
+  while (pRecord != NULL) {
+    Percent = Index * 50.0 / m_NifFile.GetNumRecords() + 50.0f;
+    m_pInterface->ProgressUpdate(Percent, TRUE);
+    Index++;
+
+    Result = ParseNifRecord(pRecord);
+    if (Result != IMPEXP_SUCCESS) return (Result);
+    pRecord = m_NifFile.GetNextRecord(NifPos);
+   }
+
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::CreateScene()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ImportNif (pFilename);
+ *
+ * Main method to import the given NIF file. Protected class method.
+ *
+ *=========================================================================*/
+int CNifImport::ImportNif (const TCHAR* pFilename) {
+  //DEFINE_FUNCTION("CNifImport::ImportNif()");
+  int Result;
+
+  //return TestMesh();
+  m_AddedNodeScene = false;
+  m_pCurrentNode = NULL;
+  m_pCurrentNode1 = NULL;
+
+  m_pLastNode = NULL;
+  m_pLastSourceTexture = NULL;
+  m_pLastTriShape = NULL;
+  m_pMaterial = NULL;
+  m_pInterface->GetMaterialLibrary().DeleteAll();
+
+	/* Attempt to load/parse the NIF file */
+  Result = LoadNif(pFilename);
+  if (Result != IMPEXP_SUCCESS) return (Result);
+
+	/* Add the objects to the max scene */
+  Result = CreateScene();
+  if (Result != IMPEXP_SUCCESS) return (Result);
+ 
+	/* Import was a success! */
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ImportNif()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int LoadNif (pFilename);
+ *
+ * Protected class method to load/parse the given NIF file.
+ *
+ *=========================================================================*/
+int CNifImport::LoadNif (const TCHAR* pFilename) {
+  //DEFINE_FUNCTION("CNifImport::LoadNif()");
+  bool Result;
+
+	/* Update the progress bar */
+  m_pInterface->ProgressUpdate(0, TRUE, _T("Loading NIF File..."));
+  SystemLog.Printf(_T("\t\tLoading Nif '%s'..."), pFilename);
+
+	/* Attempt to read and parse the given NIF file */
+  Result = m_NifFile.Read(pFilename);
+  SystemLog.Printf(_T("\t\tFinished Loading Nif"));
+
+  if (!Result) {
+    SystemLog.Printf(_T("\t\tNif Error!"));
+    ErrorHandler.Notify(_T("Nif Load Error!"));
+    return (IMPEXP_FAIL);
+   }
+
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::LoadNif()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ParseNifRecord (pRecord);
+ *
+ * Parse/convert the given NIF record and update the MAX scene as required.
+ * Protected class methods.
+ *
+ *=========================================================================*/
+int CNifImport::ParseNifRecord (CNifBaseRecord* pRecord) {
+  int Result;
+
+  SystemLog.Printf(_T("\t\tParsing Nif Record %s (0x%08lX)"), pRecord->GetName(), pRecord->GetStartOffset());
+
+  if (pRecord->IsName(_T("NiNode"))) {
+    Result = ParseNode((CNifNode *) pRecord);
+   }
+  else if (pRecord->IsName(_T("NiTriShape"))) {
+    Result = ParseTriShape((CNifTriShape *) pRecord);
+   }
+  else if (pRecord->IsName(_T("NiTriShapeData"))) {
+    Result = ParseTriShapeData((CNifTriShapeData *) pRecord);
+   }
+  else if (pRecord->IsName(_T("NiMaterialProperty"))) {
+    Result = ParseMaterialProperty((CNifMaterialProperty *) pRecord);
+   }
+  else if (pRecord->IsName(_T("NiSourceTexture"))) {
+    Result = ParseSourceTexture((CNifSourceTexture *) pRecord);
+   }
+  else if (pRecord->IsName(_T("RootCollisionNode"))) {
+    Result = ParseRootCollisionNode((CNifRootCollisionNode *) pRecord);
+   }
+	/* Records that we don't need to parse */
+  else {
+    Result = IMPEXP_SUCCESS;
+    SystemLog.Printf(_T("Not parsing NIF record '%s'"), pRecord->GetName());
+   }
+
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ParseNifRecord()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ParseNode (pNode);
+ *
+ * Protected class method to parse a NIF node record.
+ *
+ *=========================================================================*/
+int CNifImport::ParseNode (CNifNode* pNode) {
+  Matrix3	TransformMatrix;
+  TriObject*	pTriObject;
+  Mesh		MeshObject;
+  
+	/* Create a node in the scene */
+  m_pCurrentNode = m_pImpInt->CreateNode();
+  m_pCurrentNode->SetName(pNode->GetRecordName());
+  m_pLastNode    = pNode;
+
+	/* Set the transformation matrix */
+  TransformMatrix = CreateTransformMatrix(pNode->GetFloatData());
+  m_pCurrentNode->SetTransform(0, TransformMatrix);
+
+  pTriObject = CreateNewTriObject();
+  pTriObject->GetMesh() = MeshObject;
+  m_pCurrentNode->Reference(pTriObject);
+  m_AddedNodeScene = false;
+
+  //m_pImpInt->AddNodeToScene(m_pCurrentNode);
+
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ParseNode()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ParseTriShape (pTriShape);
+ *
+ * Protected class method to parse a NIF tri-shape record.
+ *
+ *=========================================================================*/
+int CNifImport::ParseTriShape (CNifTriShape* pTriShape) {
+  Matrix3 OldMatrix;
+  Matrix3 TriMatrix;
+  Matrix3 NewMatrix;
+
+  m_pCurrentNode1 = m_pImpInt->CreateNode();
+  m_pCurrentNode1->SetName(pTriShape->GetRecordName());
+  
+	/* Save the tri-shape nif object */
+  m_pLastTriShape = pTriShape;
+
+	/* Modify the current node's transformation matrix if valid */
+  if (m_pLastNode != NULL && m_pCurrentNode != NULL) {
+    //OldMatrix = CreateTransformMatrix(m_pLastNode->GetFloatData());
+    TriMatrix = CreateTransformMatrix(pTriShape->GetFloatData());
+    //NewMatrix = XFormMat(TriMatrix, OldMatrix);
+    //m_pCurrentNode->SetTransform(0, NewMatrix);
+    m_pCurrentNode1->SetTransform(0, TriMatrix);
+   }
+       
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ParseTriShape()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ParseTriShapeData (pTriShapeData);
+ *
+ * Protected class method to parse a NIF tri-shape data record.
+ *
+ *=========================================================================*/
+int CNifImport::ParseTriShapeData (CNifTriShapeData* pTriShapeData) {
+  nifpos_t*	pPoint;
+  float*	pUVPoint;
+  Point3	NormPoint;
+  Mesh		MeshObject;
+  TriObject*	pTriObject;
+  int		Index;
+  BOOL		Result;
+  short*	pFaceIndex;
+  bool		HasTexture;
+
+	/* Create a new tri-shape object */
+  SystemLog.Printf(_T("\tCreating Tri-Mesh Object"));
+  pTriObject = CreateNewTriObject();
+
+  if (pTriObject == NULL) {
+    ErrorHandler.AddError(ERR_CUSTOM, _T("Failed to create a new Tri-Mesh object!"));
+    return (IMPEXP_FAIL);
+   }
+
+  HasTexture = (pTriShapeData->GetUVPointPtr(0) != NULL);
+
+	/* Initialize the vertices in the object */
+  SystemLog.Printf(_T("\tSetting Vertices"));
+  Result = MeshObject.setNumVerts(pTriShapeData->GetNumPoints(), FALSE);
+  if (HasTexture) MeshObject.setNumTVerts(pTriShapeData->GetNumPoints(), FALSE);
+  if (!Result) return (IMPEXP_FAIL);
+
+  for (Index = 0; Index < pTriShapeData->GetNumPoints(); Index++) {
+    pPoint   = pTriShapeData->GetPoint(Index);
+    pUVPoint = pTriShapeData->GetUVPointPtr(Index);
+    MeshObject.verts[Index].x = pPoint->X;
+    MeshObject.verts[Index].y = pPoint->Y;
+    MeshObject.verts[Index].z = pPoint->Z;
+
+    if (HasTexture && pUVPoint != NULL) {
+      MeshObject.tVerts[Index].x = pUVPoint[0];
+      MeshObject.tVerts[Index].y = pUVPoint[1];
+      MeshObject.tVerts[Index].z = 0;
+     }
+   }
+
+	/* Initialize the faces in the object */
+  SystemLog.Printf(_T("\tSetting Faces"));
+  Result = MeshObject.setNumFaces(pTriShapeData->GetNumFaces(), FALSE);
+  if (HasTexture) MeshObject.setNumTVFaces(pTriShapeData->GetNumFaces(), FALSE);
+  if (!Result) return (IMPEXP_FAIL);
+
+  for (Index = 0; Index < pTriShapeData->GetNumFaces(); Index++) {
+    pFaceIndex = pTriShapeData->GetFace(Index*3);
+    MeshObject.faces[Index].v[0] = pFaceIndex[0];
+    MeshObject.faces[Index].v[1] = pFaceIndex[1];
+    MeshObject.faces[Index].v[2] = pFaceIndex[2];
+    MeshObject.faces[Index].Show();
+    MeshObject.faces[Index].setEdgeVisFlags(EDGE_VIS, EDGE_VIS, EDGE_VIS);
+
+    if (HasTexture) {
+      MeshObject.tvFace[Index].t[0] = pFaceIndex[0];
+      MeshObject.tvFace[Index].t[1] = pFaceIndex[1];
+      MeshObject.tvFace[Index].t[2] = pFaceIndex[2];
+     }
+   }
+
+	/* Update the normal arrays for the object */
+  MeshObject.buildNormals();
+  //MeshObject.AutoSmooth(45.0f, FALSE);
+
+  for (Index = 0; Index < pTriShapeData->GetNumPoints(); Index++) {
+    pPoint = pTriShapeData->GetNormal(Index);
+
+    if (pPoint != NULL) {
+      NormPoint.x = pPoint->X;
+      NormPoint.y = pPoint->Y;
+      NormPoint.z = pPoint->Z;
+      NormPoint = Normalize(NormPoint);
+      MeshObject.setNormal(Index, NormPoint);
+     }
+   }//*/
+
+	/* Save the mesh and add it to the scene */
+  SystemLog.Printf(_T("\tSaving Tri-Mesh Object"));
+  pTriObject->GetMesh() = MeshObject;
+  m_pCurrentNode1->Reference(pTriObject);
+  m_pImpInt->AddNodeToScene(m_pCurrentNode1);
+
+  INode* pINode  = m_pCurrentNode->GetINode();
+  INode* pINode1 = m_pCurrentNode1->GetINode();
+  pINode1->SetWireColor(0xff6666);
+  pINode1->SetMtl(m_pMaterial);
+
+  pINode->AttachChild(pINode1);
+
+  if (!m_AddedNodeScene) {
+    m_AddedNodeScene = true;
+    m_pImpInt->AddNodeToScene(m_pCurrentNode);
+   }
+
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ParseTriShapeData()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ParseMaterialProperty (pMaterialProp);
+ *
+ * Description
+ *
+ *=========================================================================*/
+int CNifImport::ParseMaterialProperty (CNifMaterialProperty* pMaterialProp) {
+  StdMat* pMaterial;
+  int     MatIndex;
+
+	/* See if the material already exists in the library */
+  MatIndex = m_pInterface->GetMaterialLibrary().FindMtlByName(TSTR(pMaterialProp->GetRecordName()));
+
+  if (MatIndex != -1) {
+    pMaterial = (StdMat *) m_pInterface->GetMaterialLibrary()[MatIndex];
+    m_pLastSourceTexture = NULL;
+    return (IMPEXP_SUCCESS);
+   }	
+	
+	/* Create the new material */
+  pMaterial = NewDefaultStdMat();
+
+	/* Set the basic material properties */	
+  pMaterial->SetName(pMaterialProp->GetRecordName());
+  pMaterial->SetAmbient(Color(pMaterialProp->GetAmbientColor()), 0);
+  pMaterial->SetDiffuse(Color(pMaterialProp->GetDiffuseColor()),0);
+  pMaterial->SetSpecular(Color(pMaterialProp->GetSpecularColor()),0);
+  pMaterial->SetShininess(0.5f, 0);
+  pMaterial->SetShinStr(.7f, 0);
+
+	/* Add the diffuse texture map if required */
+  if (m_pLastSourceTexture != NULL) {
+    BitmapTex* pTexMap = NewDefaultBitmapTex();
+
+		/* Set the map options */
+    pTexMap->SetMapName((TCHAR *)m_pLastSourceTexture->GetRecordName());
+
+    pMaterial->EnableMap(ID_DI, TRUE);
+    pMaterial->SetSubTexmap(ID_DI, pTexMap);  
+   }
+  
+  m_pMaterial = pMaterial;
+  m_pLastSourceTexture = NULL;
+
+	/* Add the material to the material library */
+  m_pInterface->GetMaterialLibrary().Add(pMaterial);
+	
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ParseMaterialProperty()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ParseSourceTexture (pSourceTexture);
+ *
+ * Description
+ *
+ *=========================================================================*/
+int CNifImport::ParseSourceTexture (CNifSourceTexture* pSourceTexture) {
+  //DEFINE_FUNCTION("CNifImport::ParseSourceTexture()");
+  m_pLastSourceTexture = pSourceTexture;
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ParseSourceTexture()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int TestMesh (void);
+ *
+ * Creates some test objects in the scene.
+ *
+ *=========================================================================*/
+int CNifImport::TestMesh (void) {
+  //DEFINE_FUNCTION("CNifImport::TestMesh()");
+  ImpNode*	pNode1;
+  ImpNode*	pNode2;
+  INode*	pINode1;
+  INode*	pINode2;
+  Mesh		MeshObject1;
+  Mesh		MeshObject2;
+  TriObject*	pTriObject1;
+  TriObject*	pTriObject2;
+
+	/* Create a node in the scene */
+  pNode1 = m_pImpInt->CreateNode();
+  pNode1->SetName(_T("TestNode1"));
+  pNode2 = m_pImpInt->CreateNode();
+  pNode2->SetName(_T("TestNode2"));
+
+  //CreateBox(MeshObject1, 1);
+  CreateBox(MeshObject2, 2);
+
+  pTriObject1 = CreateNewTriObject();
+  pTriObject1->GetMesh() = MeshObject1;
+  pTriObject2 = CreateNewTriObject();
+  pTriObject2->GetMesh() = MeshObject2;
+
+  pNode1->Reference(pTriObject1);
+  pNode2->Reference(pTriObject2);
+
+  pINode1 = pNode1->GetINode();
+  pINode2 = pNode2->GetINode();
+
+  pINode1->AttachChild(pINode2);
+
+  m_pImpInt->AddNodeToScene(pNode1);
+  m_pImpInt->AddNodeToScene(pNode2);
+
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::TestMesh()
+ *=========================================================================*/
+
+
+/*===========================================================================
+ *
+ * Class CNifImport Method - int ParseRootCollisionNode (pNode);
+ *
+ * Similar to the NiNode record.
+ *
+ *=========================================================================*/
+int CNifImport::ParseRootCollisionNode (CNifRootCollisionNode* pNode) {
+  //DEFINE_FUNCTION("CNifImport::ParseRootCollisionNode()");
+  Matrix3	TransformMatrix;
+  TriObject*	pTriObject;
+  Mesh		MeshObject;
+  
+	/* Create a node in the scene */
+  m_pCurrentNode = m_pImpInt->CreateNode();
+  m_pCurrentNode->SetName(pNode->GetRecordName());
+  m_pLastNode    = NULL;
+
+	/* Set the transformation matrix */
+  TransformMatrix = CreateTransformMatrix(pNode->GetFloatData());
+  m_pCurrentNode->SetTransform(0, TransformMatrix);
+
+  pTriObject = CreateNewTriObject();
+  pTriObject->GetMesh() = MeshObject;
+  m_pCurrentNode->Reference(pTriObject);
+  m_AddedNodeScene = false;
+
+  return (IMPEXP_SUCCESS);
+ }
+/*===========================================================================
+ *		End of Class Method CNifImport::ParseRootCollisionNode()
+ *=========================================================================*/
+
+
+
+
